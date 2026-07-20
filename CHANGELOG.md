@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-07-20 — Realism pass (de-"8-bit")
+- Added image-based lighting: a procedural PMREM environment map so PBR metals reflect the room/lava instead of looking flat.
+- Replaced blocky cell-noise with smooth multi-octave fractal (fbm) noise and raised all textures to 1K, adding fine micro-relief to the normal maps and dedicated roughness maps — kills the pixelated/retro texture look.
+- Retuned materials for real reflectivity (higher metalness + envMapIntensity), brighter exposure, a cool front fill light and softer shadows so surfaces and demons read naturally.
+- Higher-resolution demon skin with normal-mapped warty relief and reflective sheen.
+
 ## 2026-07-20 — Visual overhaul: realistic, scary, high-quality
 - Added a cinematic post-processing pipeline (vendored under `vendor/jsm/`): EffectComposer + UnrealBloom + a custom atmosphere pass (film grain, vignette, chromatic aberration, low-HP screen warp) + FXAA + ACES tone-mapping.
 - Replaced flat-colour surfaces with procedural PBR materials: canvas-generated worn metal (rivets/rust/seams), pitted concrete and molten magma, each with a derived normal map for real surface relief.
