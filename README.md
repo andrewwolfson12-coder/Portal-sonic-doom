@@ -50,12 +50,21 @@ Mobile/touch is supported too: left virtual stick to move, drag the right side t
 - **Combat** — the Graviton-Tear fires energy projectiles on a small ammo cell that recharges. Landing kills tops up your shield.
 - **Waves & extraction** — clear all three demon waves to bring the extraction ring online, then stand in it to win. Fall in the lava and you die.
 
+## Visuals
+
+The game aims for a moody, cinematic, "realistic-but-hellish" look — entirely from code, no image/model files shipped:
+
+- **Cinematic post-processing** — a full `EffectComposer` chain: ACES tone-mapping, **UnrealBloom** for the neon/lava glow, a custom atmosphere pass (film grain, edge vignette, chromatic aberration, a low-HP red pulse that warps the screen), and FXAA.
+- **Procedural PBR textures** — worn brushed-metal panels with rivets and rust, pitted cracked concrete, and molten magma — each generated on a canvas at load with matching **normal maps** derived from a heightfield, so surfaces catch light with real relief.
+- **Scary demons** — built from geometry: hunched charred bodies with glowing lava-vein skin (emissive map), horned skulls, fangs, clawed arms and digitigrade legs, with a stalking gait, head-tracking and a lunge on attack.
+- **Atmosphere** — thick fog, hundreds of rising embers, flickering fire/failing-neon lights, animated flowing lava, and a continuous sub-bass dread drone.
+
 ## Tech
 
-- [Three.js](https://threejs.org) r161 (MIT), **vendored** under `vendor/` so the game runs fully offline.
+- [Three.js](https://threejs.org) r161 (MIT), **vendored** under `vendor/` (core + the post-processing modules) so the game runs fully offline — no CDN.
 - Hand-rolled FPS controller with swept AABB collision, Quake-style acceleration, double-jump and portal teleport math.
-- Procedural Web-Audio SFX — no audio asset files required.
-- Everything else — geometry, lighting, particles, HUD, demons — is generated in code in `index.html`.
+- Procedural Web-Audio SFX and ambient drone — no audio asset files required.
+- Everything — geometry, textures, lighting, particles, HUD, demons, audio — is generated in code in `index.html`.
 
 ## Repository layout
 

@@ -212,6 +212,12 @@
 
 <script type="module">
 import * as THREE from 'three';
+import { EffectComposer } from './vendor/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from './vendor/jsm/postprocessing/RenderPass.js';
+import { ShaderPass } from './vendor/jsm/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from './vendor/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from './vendor/jsm/postprocessing/OutputPass.js';
+import { FXAAShader } from './vendor/jsm/shaders/FXAAShader.js';
 
 // ============================================================================
 //  GRAVITON — a Portal x Sonic x Doom vertical slice, single-file WebGL game.
@@ -238,67 +244,260 @@ let renderer, scene, camera;
 try{
   renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
 }catch(err){ fatal('WebGL init failed'); throw err; }
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const PIXR = Math.min(devicePixelRatio, 2);
+renderer.setPixelRatio(PIXR);
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 1.18;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 $('#game').appendChild(renderer.domElement);
 
 scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0710);
-scene.fog = new THREE.FogExp2(0x140a18, 0.012);
+scene.background = new THREE.Color(0x07040a);
+scene.fog = new THREE.FogExp2(0x160a14, 0.019);
 
-camera = new THREE.PerspectiveCamera(78, innerWidth/innerHeight, 0.1, 1200);
+camera = new THREE.PerspectiveCamera(80, innerWidth/innerHeight, 0.1, 1200);
+
+// ---------------------------------------------------------------------------
+//  Post-processing: bloom + tone-map + custom atmosphere (grain/vignette/CA)
+// ---------------------------------------------------------------------------
+const AtmosphereShader = {
+  uniforms: {
+    tDiffuse:{value:null}, time:{value:0}, hurt:{value:0}, lowhp:{value:0},
+    vignette:{value:1.05}, grain:{value:0.035}, aberr:{value:0.0011},
+    res:{value:new THREE.Vector2(innerWidth,innerHeight)}
+  },
+  vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+  fragmentShader:`
+    varying vec2 vUv; uniform sampler2D tDiffuse; uniform float time,hurt,lowhp,vignette,grain,aberr;
+    float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+    void main(){
+      vec2 uv=vUv; vec2 c=uv-0.5;
+      float d=dot(c,c);
+      // chromatic aberration, stronger toward edges and when hurt
+      float ca=aberr + hurt*0.006 + lowhp*0.003;
+      vec2 dir=normalize(c+1e-5);
+      float r=texture2D(tDiffuse, uv - dir*ca*(0.6+d*2.0)).r;
+      float g=texture2D(tDiffuse, uv).g;
+      float b=texture2D(tDiffuse, uv + dir*ca*(0.6+d*2.0)).b;
+      vec3 col=vec3(r,g,b);
+      // film grain — subtle, and fades out in the darkest areas so shadows stay clean
+      float lum=dot(col,vec3(0.299,0.587,0.114));
+      float n=hash(uv*vec2(1920.0,1080.0)+fract(time))-0.5;
+      col += n*grain*smoothstep(0.02,0.35,lum);
+      // vignette
+      float vig=smoothstep(0.95,0.28,d*vignette);
+      col*=mix(0.55,1.0,vig);
+      // damage / low-hp red pulse at the edges
+      float edge=smoothstep(0.15,0.5,d);
+      col=mix(col, col*vec3(1.6,0.25,0.3), clamp(hurt,0.0,1.0)*edge);
+      float pulse=0.5+0.5*sin(time*4.0);
+      col=mix(col, mix(col, vec3(0.5,0.02,0.05), 0.5), lowhp*edge*pulse);
+      // subtle scanline for a grimy CRT-ish sci-fi feel
+      col*=1.0-0.035*sin(uv.y*1400.0);
+      gl_FragColor=vec4(col,1.0);
+    }
+  `
+};
+let composer, bloomPass, atmoPass, fxaaPass;
+function buildComposer(){
+  composer = new EffectComposer(renderer);
+  composer.setPixelRatio(PIXR);
+  composer.setSize(innerWidth, innerHeight);
+  composer.addPass(new RenderPass(scene, camera));
+  bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 0.72, 0.55, 0.78);
+  composer.addPass(bloomPass);
+  atmoPass = new ShaderPass(AtmosphereShader); composer.addPass(atmoPass);
+  fxaaPass = new ShaderPass(FXAAShader);
+  fxaaPass.material.uniforms['resolution'].value.set(1/(innerWidth*PIXR), 1/(innerHeight*PIXR));
+  composer.addPass(fxaaPass);
+  composer.addPass(new OutputPass());
+}
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  if(composer){
+    composer.setSize(innerWidth, innerHeight);
+    bloomPass.setSize(innerWidth, innerHeight);
+    fxaaPass.material.uniforms['resolution'].value.set(1/(innerWidth*PIXR), 1/(innerHeight*PIXR));
+    atmoPass.uniforms.res.value.set(innerWidth, innerHeight);
+  }
 });
+buildComposer();
 
 // ---------------------------------------------------------------------------
 //  Lighting — dark industrial with hot lava glow + neon accents
 // ---------------------------------------------------------------------------
-scene.add(new THREE.HemisphereLight(0x6a4a70, 0x241016, 0.95));
-scene.add(new THREE.AmbientLight(0x4a3a55, 0.35));
-const key = new THREE.DirectionalLight(0xffe0c8, 1.05);
+scene.add(new THREE.HemisphereLight(0x6a4c68, 0x201014, 0.8));
+scene.add(new THREE.AmbientLight(0x38304a, 0.34));
+const key = new THREE.DirectionalLight(0xffcdb0, 1.0);
 key.position.set(-40, 80, 30);
 key.castShadow = true;
 key.shadow.mapSize.set(2048,2048);
 key.shadow.camera.near = 1; key.shadow.camera.far = 400;
 key.shadow.camera.left=-160; key.shadow.camera.right=160;
 key.shadow.camera.top=160; key.shadow.camera.bottom=-160;
+key.shadow.bias = -0.0005;
 scene.add(key);
-const lava = new THREE.PointLight(0xff5a1e, 2.2, 300, 2);
-lava.position.set(0, -6, 0); scene.add(lava);
-const neonA = new THREE.PointLight(0xb14dff, 1.4, 120, 2); neonA.position.set(20,14,-30); scene.add(neonA);
-const neonB = new THREE.PointLight(0x31e6ff, 1.2, 120, 2); neonB.position.set(-30,12,40); scene.add(neonB);
+// hot lava glow from below (flickers)
+const lava = new THREE.PointLight(0xff5a1e, 3.0, 340, 2);
+lava.position.set(0, -6, 0); lava.castShadow=false; scene.add(lava);
+const lava2 = new THREE.PointLight(0xff3a08, 2.0, 200, 2); lava2.position.set(40,-6,-30); scene.add(lava2);
+// neon rim accents
+const neonA = new THREE.PointLight(0xb14dff, 1.6, 130, 2); neonA.position.set(20,14,-30); scene.add(neonA);
+const neonB = new THREE.PointLight(0x31e6ff, 1.4, 130, 2); neonB.position.set(-30,12,40); scene.add(neonB);
+// flicker driver
+const flickers = [
+  {l:lava, base:3.0, amt:0.6, spd:11, ph:0}, {l:lava2, base:2.0, amt:0.7, spd:7, ph:2},
+  {l:neonA, base:1.6, amt:0.35, spd:23, ph:1}, {l:neonB, base:1.4, amt:0.3, spd:17, ph:4},
+];
+
+// ---------------------------------------------------------------------------
+//  Procedural PBR textures (canvas-generated: albedo + normal + roughness)
+// ---------------------------------------------------------------------------
+function makeCanvas(s){ const c=document.createElement('canvas'); c.width=c.height=s; return [c,c.getContext('2d')]; }
+function valueNoise(ctx,s,cells,alpha,color){
+  // soft blotchy noise for grime/rust variation
+  const cs=s/cells;
+  for(let y=0;y<cells;y++)for(let x=0;x<cells;x++){
+    const v=Math.random(); ctx.globalAlpha=alpha*v;
+    ctx.fillStyle=color; ctx.fillRect(x*cs,y*cs,cs+1,cs+1);
+  }
+  ctx.globalAlpha=1;
+}
+// derive a normal map from a heightfield canvas
+function normalFromHeight(hCanvas, strength){
+  const s=hCanvas.width, hctx=hCanvas.getContext('2d');
+  const hd=hctx.getImageData(0,0,s,s).data;
+  const [nc,nctx]=makeCanvas(s); const nd=nctx.createImageData(s,s);
+  const H=(x,y)=>{ x=(x+s)%s; y=(y+s)%s; return hd[(y*s+x)*4]/255; };
+  for(let y=0;y<s;y++)for(let x=0;x<s;x++){
+    const dx=(H(x-1,y)-H(x+1,y))*strength, dy=(H(x,y-1)-H(x,y+1))*strength;
+    const nz=1.0, len=Math.hypot(dx,dy,nz);
+    const i=(y*s+x)*4;
+    nd.data[i]=(dx/len*0.5+0.5)*255; nd.data[i+1]=(dy/len*0.5+0.5)*255; nd.data[i+2]=(nz/len*0.5+0.5)*255; nd.data[i+3]=255;
+  }
+  nctx.putImageData(nd,0,0);
+  const t=new THREE.CanvasTexture(nc); t.wrapS=t.wrapT=THREE.RepeatWrapping; return t;
+}
+function tex(c){ const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.anisotropy=4; return t; }
+
+// --- worn metal panel: albedo + height(for normal) + roughness ---
+function metalPanelTextures(base, seams=4){
+  const s=512, [ac,ax]=makeCanvas(s), [hc,hx]=makeCanvas(s), [rc,rx]=makeCanvas(s);
+  ax.fillStyle=base; ax.fillRect(0,0,s,s);
+  hx.fillStyle='#808080'; hx.fillRect(0,0,s,s);
+  rx.fillStyle='#b0b0b0'; rx.fillRect(0,0,s,s); // fairly rough
+  // brushed streaks
+  for(let i=0;i<2200;i++){ const y=Math.random()*s, x=Math.random()*s, w=Math.random()*40+8;
+    ax.globalAlpha=0.05; ax.strokeStyle=Math.random()<0.5?'#000':'#fff';
+    ax.beginPath(); ax.moveTo(x,y); ax.lineTo(x+w,y); ax.stroke(); }
+  ax.globalAlpha=1;
+  // rust / grime blotches
+  valueNoise(ax,s,24,0.5,'#4a2410'); valueNoise(ax,s,64,0.25,'#20120a');
+  valueNoise(ax,s,48,0.2,'#0a0a0c');
+  // panel seams (grooves -> dark in height, dark in albedo)
+  const cell=s/seams;
+  ax.strokeStyle='rgba(0,0,0,0.75)'; ax.lineWidth=3;
+  hx.strokeStyle='#202020'; hx.lineWidth=5;
+  for(let i=0;i<=seams;i++){ const p=i*cell;
+    ax.beginPath();ax.moveTo(p,0);ax.lineTo(p,s);ax.moveTo(0,p);ax.lineTo(s,p);ax.stroke();
+    hx.beginPath();hx.moveTo(p,0);hx.lineTo(p,s);hx.moveTo(0,p);hx.lineTo(s,p);hx.stroke();
+  }
+  // rivets along seams
+  for(let i=0;i<=seams;i++)for(let j=0;j<seams;j++){
+    const cx=i*cell, cy=j*cell+cell*0.5;
+    for(const [rx0,ry0] of [[cx,cy]]){
+      ax.beginPath(); ax.fillStyle='rgba(255,255,255,0.18)'; ax.arc(rx0,ry0,3.2,0,7); ax.fill();
+      ax.beginPath(); ax.fillStyle='rgba(0,0,0,0.4)'; ax.arc(rx0,ry0+1.5,3.2,0,7); ax.fill();
+      hx.beginPath(); hx.fillStyle='#c8c8c8'; hx.arc(rx0,ry0,3.2,0,7); hx.fill();
+    }
+  }
+  // roughness variation follows grime
+  valueNoise(rx,s,24,0.5,'#ffffff'); valueNoise(rx,s,40,0.4,'#404040');
+  return { map:tex(ac), normalMap:normalFromHeight(hc,2.6), roughnessMap:tex(rc) };
+}
+// --- pitted concrete/floor ---
+function concreteTextures(base){
+  const s=512, [ac,ax]=makeCanvas(s), [hc,hx]=makeCanvas(s);
+  ax.fillStyle=base; ax.fillRect(0,0,s,s);
+  hx.fillStyle='#888'; hx.fillRect(0,0,s,s);
+  valueNoise(ax,s,64,0.4,'#000000'); valueNoise(ax,s,32,0.3,'#3a3030');
+  valueNoise(ax,s,96,0.25,'#151015'); valueNoise(hx,s,96,0.5,'#333');
+  valueNoise(hx,s,48,0.4,'#cccccc');
+  // cracks
+  ax.strokeStyle='rgba(0,0,0,0.6)'; hx.strokeStyle='#222';
+  for(let k=0;k<10;k++){ let x=Math.random()*s,y=Math.random()*s; ax.lineWidth=hx.lineWidth=Math.random()*2+1;
+    ax.beginPath();hx.beginPath();ax.moveTo(x,y);hx.moveTo(x,y);
+    for(let seg=0;seg<12;seg++){ x+=(Math.random()-.5)*40; y+=(Math.random()-.5)*40; ax.lineTo(x,y);hx.lineTo(x,y);} ax.stroke();hx.stroke(); }
+  return { map:tex(ac), normalMap:normalFromHeight(hc,3.2) };
+}
+
+const metalTx  = metalPanelTextures('#33313a', 4);
+const metal2Tx = metalPanelTextures('#3c2f38', 3);
+const floorTx  = concreteTextures('#2b2732');
 
 // ---------------------------------------------------------------------------
 //  Materials
 // ---------------------------------------------------------------------------
 const MAT = {
-  floor:  new THREE.MeshStandardMaterial({color:0x413848, roughness:.85, metalness:.35}),
-  metal:  new THREE.MeshStandardMaterial({color:0x554b5e, roughness:.5, metalness:.7}),
-  metal2: new THREE.MeshStandardMaterial({color:0x63505f, roughness:.6, metalness:.55}),
+  floor:  new THREE.MeshStandardMaterial({color:0x8a8090, roughness:.95, metalness:.15,
+             map:floorTx.map, normalMap:floorTx.normalMap, normalScale:new THREE.Vector2(1.1,1.1)}),
+  metal:  new THREE.MeshStandardMaterial({color:0x8f8a98, roughness:.7, metalness:.85,
+             map:metalTx.map, normalMap:metalTx.normalMap, roughnessMap:metalTx.roughnessMap,
+             normalScale:new THREE.Vector2(1.3,1.3)}),
+  metal2: new THREE.MeshStandardMaterial({color:0x8a7580, roughness:.75, metalness:.8,
+             map:metal2Tx.map, normalMap:metal2Tx.normalMap, roughnessMap:metal2Tx.roughnessMap,
+             normalScale:new THREE.Vector2(1.3,1.3)}),
   trim:   new THREE.MeshStandardMaterial({color:0x120910, roughness:.4, metalness:.9,
              emissive:0xb14dff, emissiveIntensity:.7}),
   rail:   new THREE.MeshStandardMaterial({color:0x101018, roughness:.3, metalness:.95,
              emissive:0x31e6ff, emissiveIntensity:.9}),
   boost:  new THREE.MeshStandardMaterial({color:0x200a2c, roughness:.3, metalness:.6,
-             emissive:0xff3df0, emissiveIntensity:1.4}),
+             emissive:0xff3df0, emissiveIntensity:1.05}),
   goal:   new THREE.MeshStandardMaterial({color:0x06221f, roughness:.3, metalness:.6,
              emissive:0x2effd0, emissiveIntensity:1.2}),
 };
+// tile textures per-face based on box size so detail scale stays consistent
+function tileMat(mat, w,h,d){
+  const m=mat.clone();
+  if(m.map){ m.map=m.map.clone(); m.map.needsUpdate=true; m.map.repeat.set(Math.max(1,w/6),Math.max(1,d/6)); }
+  if(m.normalMap){ m.normalMap=m.normalMap.clone(); m.normalMap.needsUpdate=true; m.normalMap.repeat.copy(m.map.repeat); }
+  if(m.roughnessMap){ m.roughnessMap=m.roughnessMap.clone(); m.roughnessMap.needsUpdate=true; m.roughnessMap.repeat.copy(m.map.repeat); }
+  return m;
+}
 
 // ---------------------------------------------------------------------------
 //  Lava floor (animated) + damage plane
 // ---------------------------------------------------------------------------
+// molten crust texture: dark rock plates with glowing magma seams
+const lavaTx = (()=>{
+  const s=512, [ac,ax]=makeCanvas(s), [ec,ex]=makeCanvas(s);
+  ax.fillStyle='#1c0a05'; ax.fillRect(0,0,s,s);
+  ex.fillStyle='#000'; ex.fillRect(0,0,s,s);
+  valueNoise(ax,s,20,0.6,'#3a1508'); valueNoise(ax,s,40,0.4,'#0a0402');
+  // crack network of glowing magma
+  for(let k=0;k<70;k++){ let x=Math.random()*s,y=Math.random()*s;
+    const w=Math.random()*4+1.5;
+    ex.strokeStyle='#ff7a1e'; ex.lineWidth=w; ex.lineCap='round'; ex.beginPath(); ex.moveTo(x,y);
+    for(let seg=0;seg<6;seg++){ x+=(Math.random()-.5)*70; y+=(Math.random()-.5)*70; ex.lineTo(x,y);} ex.stroke();
+  }
+  // bright cores
+  ex.globalCompositeOperation='lighter';
+  for(let k=0;k<60;k++){ ex.fillStyle='rgba(255,220,120,0.5)';
+    ex.beginPath(); ex.arc(Math.random()*s,Math.random()*s,Math.random()*3+1,0,7); ex.fill(); }
+  ex.globalCompositeOperation='source-over';
+  const m=tex(ac), e=tex(ec); m.repeat.set(10,10); e.repeat.set(10,10);
+  return {map:m, emissiveMap:e};
+})();
 const lavaGeo = new THREE.PlaneGeometry(1600,1600,80,80);
 const lavaMat = new THREE.MeshStandardMaterial({
-  color:0xff4a12, emissive:0xff2a00, emissiveIntensity:1.6, roughness:.6, metalness:.1});
+  color:0xff5a20, map:lavaTx.map, emissive:0xff5010, emissiveMap:lavaTx.emissiveMap,
+  emissiveIntensity:1.8, roughness:.75, metalness:.0});
 const lavaMesh = new THREE.Mesh(lavaGeo, lavaMat);
 lavaMesh.rotation.x = -Math.PI/2; lavaMesh.position.y = -8;
 scene.add(lavaMesh);
@@ -314,7 +513,7 @@ let goalZone = null;  // {min,max,mesh}
 
 function addBox(x,y,z, w,h,d, mat, opt={}){
   const geo = new THREE.BoxGeometry(w,h,d);
-  const m = new THREE.Mesh(geo, mat);
+  const m = new THREE.Mesh(geo, mat.map ? tileMat(mat,w,h,d) : mat);
   m.position.set(x,y,z);
   m.castShadow = true; m.receiveShadow = true;
   scene.add(m);
@@ -417,6 +616,34 @@ function buildLevel(){
   goalZone.torus = gz;
 }
 buildLevel();
+
+// ---------------------------------------------------------------------------
+//  Atmosphere: rising embers + drifting ash motes
+// ---------------------------------------------------------------------------
+const EMBER_N = 320;
+const emberGeo = new THREE.BufferGeometry();
+const emberPos = new Float32Array(EMBER_N*3);
+const emberVel = [];
+for(let i=0;i<EMBER_N;i++){
+  emberPos[i*3]=rand(-130,130); emberPos[i*3+1]=rand(-6,60); emberPos[i*3+2]=rand(-130,130);
+  emberVel.push(new THREE.Vector3(rand(-0.3,0.3), rand(1.2,3.5), rand(-0.3,0.3)));
+}
+emberGeo.setAttribute('position', new THREE.BufferAttribute(emberPos,3));
+const emberTexCanvas=(()=>{ const [c,x]=makeCanvas(64); const gr=x.createRadialGradient(32,32,0,32,32,32);
+  gr.addColorStop(0,'rgba(255,200,120,1)'); gr.addColorStop(0.4,'rgba(255,110,30,0.7)'); gr.addColorStop(1,'rgba(255,60,0,0)');
+  x.fillStyle=gr; x.fillRect(0,0,64,64); return c; })();
+const embers = new THREE.Points(emberGeo, new THREE.PointsMaterial({
+  size:0.6, map:new THREE.CanvasTexture(emberTexCanvas), transparent:true, depthWrite:false,
+  blending:THREE.AdditiveBlending, color:0xffa040, opacity:0.9}));
+scene.add(embers);
+function updateEmbers(dt){
+  const p=emberGeo.attributes.position.array;
+  for(let i=0;i<EMBER_N;i++){
+    p[i*3]+=emberVel[i].x*dt; p[i*3+1]+=emberVel[i].y*dt; p[i*3+2]+=emberVel[i].z*dt;
+    if(p[i*3+1]>62){ p[i*3+1]=-6; p[i*3]=player.pos.x+rand(-120,120); p[i*3+2]=player.pos.z+rand(-120,120); }
+  }
+  emberGeo.attributes.position.needsUpdate=true;
+}
 
 // ---------------------------------------------------------------------------
 //  Portals — two linked rings; entering one exits the other w/ momentum
@@ -561,23 +788,92 @@ function updateAmmoHUD(){
 //  Enemies (Doom demons)
 // ---------------------------------------------------------------------------
 const enemies = [];
+
+// charred demon skin: dark cracked flesh with glowing lava veins (emissiveMap)
+function demonSkin(){
+  const s=256, [ac,ax]=makeCanvas(s), [ec,ex]=makeCanvas(s);
+  ax.fillStyle='#1a0608'; ax.fillRect(0,0,s,s);
+  valueNoise(ax,s,32,0.6,'#0a0303'); valueNoise(ax,s,48,0.4,'#2c0d0d');
+  ex.fillStyle='#000'; ex.fillRect(0,0,s,s);
+  // glowing crack veins
+  for(let k=0;k<26;k++){ let x=Math.random()*s,y=Math.random()*s;
+    ex.strokeStyle='#ff5a12'; ex.lineWidth=Math.random()*2+1; ex.beginPath(); ex.moveTo(x,y);
+    ax.strokeStyle='#000'; ax.lineWidth=ex.lineWidth+2; ax.beginPath(); ax.moveTo(x,y);
+    for(let seg=0;seg<8;seg++){ x+=(Math.random()-.5)*34; y+=(Math.random()-.5)*34; ex.lineTo(x,y); ax.lineTo(x,y);} ex.stroke(); ax.stroke(); }
+  // hot spots
+  for(let k=0;k<40;k++){ ex.globalAlpha=Math.random()*0.6; ex.fillStyle='#ffdd55';
+    ex.beginPath(); ex.arc(Math.random()*s,Math.random()*s,Math.random()*2+0.5,0,7); ex.fill(); }
+  ex.globalAlpha=1;
+  return { map:tex(ac), emissiveMap:tex(ec) };
+}
+const DEMON_TX = demonSkin();
+
 function makeDemon(){
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({color:0x3a0d10, roughness:.55, metalness:.2,
-     emissive:0xff1e2d, emissiveIntensity:.5});
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.75,1.5,6,12), bodyMat);
-  body.position.y = 1.4; body.castShadow=true; g.add(body);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.62,14,14), bodyMat);
-  head.position.y = 2.65; g.add(head);
-  // glowing eyes
-  const eyeMat = new THREE.MeshBasicMaterial({color:0xffd12e});
-  for(const sx of [-0.24,0.24]){ const e=new THREE.Mesh(new THREE.SphereGeometry(0.11,8,8),eyeMat);
-     e.position.set(sx,2.72,0.52); g.add(e);}
-  // horns
-  const hornMat = new THREE.MeshStandardMaterial({color:0x120608,roughness:.4,metalness:.6});
-  for(const sx of [-0.35,0.35]){ const hn=new THREE.Mesh(new THREE.ConeGeometry(0.14,0.7,7),hornMat);
-     hn.position.set(sx,3.15,0); hn.rotation.z = sx>0?-0.5:0.5; g.add(hn);}
-  const light = new THREE.PointLight(0xff2a2a,1.0,10,2); light.position.y=2; g.add(light);
+  const skin = new THREE.MeshStandardMaterial({
+    color:0x6a2a26, roughness:.75, metalness:.1,
+    map:DEMON_TX.map, emissive:0xff4a1a, emissiveMap:DEMON_TX.emissiveMap, emissiveIntensity:1.5});
+  const boneMat = new THREE.MeshStandardMaterial({color:0x141014, roughness:.45, metalness:.55});
+
+  // hunched, tapered torso
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.62,1.15,8,16), skin);
+  torso.position.set(0,1.55,0); torso.rotation.x=0.28; torso.scale.set(1.1,1,0.82);
+  torso.castShadow=true; g.add(torso);
+  const chest = new THREE.Mesh(new THREE.SphereGeometry(0.72,16,14), skin);
+  chest.position.set(0,2.05,0.12); chest.scale.set(1.0,0.85,0.8); chest.castShadow=true; g.add(chest);
+  // spine ridge spikes
+  for(let i=0;i<5;i++){ const sp=new THREE.Mesh(new THREE.ConeGeometry(0.1,0.42,6),boneMat);
+    sp.position.set(0,1.2+i*0.32,-0.42+ i*0.06); sp.rotation.x=-1.2; g.add(sp); }
+
+  // gaunt neck + elongated skull (menacing forward jut)
+  const head = new THREE.Group(); head.position.set(0,2.62,0.32);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.42,16,14), skin);
+  skull.scale.set(0.9,0.82,1.25); head.add(skull);
+  const jaw = new THREE.Mesh(new THREE.ConeGeometry(0.3,0.55,10), skin);
+  jaw.rotation.x=-Math.PI/2; jaw.position.set(0,-0.12,0.42); jaw.scale.set(1,1,0.8); head.add(jaw);
+  // fangs
+  for(const sx of [-0.14,0,0.14]){ const f=new THREE.Mesh(new THREE.ConeGeometry(0.045,0.2,6),
+     new THREE.MeshStandardMaterial({color:0xe8dcc0,roughness:.5}));
+     f.rotation.x=Math.PI; f.position.set(sx,-0.16,0.55); head.add(f); }
+  // sunken glowing eyes
+  const eyeMat=new THREE.MeshBasicMaterial({color:0xffe14a});
+  const eyes=[];
+  for(const sx of [-0.16,0.16]){ const e=new THREE.Mesh(new THREE.SphereGeometry(0.075,10,10),eyeMat);
+     e.position.set(sx,0.05,0.5); head.add(e); eyes.push(e);
+     const eg=new THREE.PointLight(0xffcc33,0.6,4,2); eg.position.copy(e.position); head.add(eg); }
+  // twisted horns
+  for(const sx of [-0.28,0.28]){ const hn=new THREE.Mesh(new THREE.ConeGeometry(0.11,0.85,7),boneMat);
+     hn.position.set(sx,0.34,-0.05); hn.rotation.set(0.5, 0, sx>0?-0.7:0.7); head.add(hn);
+     const hn2=new THREE.Mesh(new THREE.ConeGeometry(0.07,0.45,6),boneMat);
+     hn2.position.set(sx*1.3,0.62,-0.18); hn2.rotation.set(0.9,0,sx>0?-0.9:0.9); head.add(hn2); }
+  g.add(head); g.userData.head=head; g.userData.eyes=eyes;
+
+  // long clawed arms
+  const arms=[];
+  for(const side of [-1,1]){
+    const arm=new THREE.Group(); arm.position.set(side*0.7,2.05,0.1);
+    const upper=new THREE.Mesh(new THREE.CapsuleGeometry(0.17,0.7,6,10),skin);
+    upper.position.set(side*0.15,-0.3,0); upper.rotation.z=side*0.5; arm.add(upper);
+    const fore=new THREE.Mesh(new THREE.CapsuleGeometry(0.14,0.75,6,10),skin);
+    fore.position.set(side*0.5,-0.85,0.25); fore.rotation.set(0.6,0,side*0.3); arm.add(fore);
+    for(let c=0;c<3;c++){ const claw=new THREE.Mesh(new THREE.ConeGeometry(0.05,0.34,6),boneMat);
+      claw.position.set(side*0.62,-1.2,0.5+ (c-1)*0.1); claw.rotation.x=1.2; arm.add(claw); }
+    g.add(arm); arms.push({g:arm,side});
+  }
+  g.userData.arms=arms;
+
+  // digitigrade legs
+  for(const side of [-1,1]){
+    const thigh=new THREE.Mesh(new THREE.CapsuleGeometry(0.2,0.6,6,10),skin);
+    thigh.position.set(side*0.28,0.85,0.05); thigh.rotation.x=-0.3; g.add(thigh);
+    const shin=new THREE.Mesh(new THREE.CapsuleGeometry(0.15,0.6,6,10),skin);
+    shin.position.set(side*0.3,0.3,-0.15); shin.rotation.x=0.5; g.add(shin);
+    const foot=new THREE.Mesh(new THREE.ConeGeometry(0.16,0.5,7),boneMat);
+    foot.rotation.x=-Math.PI/2; foot.position.set(side*0.3,0.06,0.15); g.add(foot);
+  }
+
+  const light = new THREE.PointLight(0xff2a12,1.2,11,2); light.position.y=1.9; g.add(light);
+  g.userData.light=light; g.userData.skin=skin;
   scene.add(g);
   return g;
 }
@@ -626,6 +922,7 @@ function damagePlayer(amount){
   $('#hurt').style.opacity = clamp(a/30,0.25,0.9);
   setTimeout(()=>$('#hurt').style.opacity=0,140);
   camShake = Math.min(camShake+0.12,0.3);
+  if(atmoPass) atmoPass.uniforms.hurt.value = Math.min(1.2, atmoPass.uniforms.hurt.value + a/22);
   if(player.hp<=0){ player.hp=0; playerDie(); }
   updateVitals();
 }
@@ -677,7 +974,23 @@ function sfx(type){
   else if(type==='boost'){ o.type='square'; o.frequency.setValueAtTime(160,t); o.frequency.exponentialRampToValueAtTime(760,t+0.2); g.gain.setValueAtTime(0.12,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.28); o.start(t); o.stop(t+0.3);}
   else if(type==='hit'){ o.type='triangle'; o.frequency.setValueAtTime(420,t); o.frequency.exponentialRampToValueAtTime(120,t+0.1); g.gain.setValueAtTime(0.14,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.12); o.start(t); o.stop(t+0.13);}
   else if(type==='teleport'){ o.type='sine'; o.frequency.setValueAtTime(880,t); o.frequency.exponentialRampToValueAtTime(220,t+0.2); g.gain.setValueAtTime(0.13,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.24); o.start(t); o.stop(t+0.26);}
+  else if(type==='growl'){ o.type='sawtooth'; o.frequency.setValueAtTime(rand(70,110),t); o.frequency.linearRampToValueAtTime(rand(40,60),t+0.4);
+    const lfo=actx.createOscillator(),lg=actx.createGain(); lfo.frequency.value=18; lg.gain.value=14; lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t+0.45);
+    g.gain.setValueAtTime(0.001,t); g.gain.linearRampToValueAtTime(0.11,t+0.06); g.gain.exponentialRampToValueAtTime(0.001,t+0.45); o.start(t); o.stop(t+0.46);}
 }
+// continuous low dread drone (starts with the game)
+let droneNodes=null;
+function startDrone(){
+  if(!actx || droneNodes) return;
+  const master=actx.createGain(); master.gain.value=0.05; master.connect(actx.destination);
+  const mk=(f,type)=>{ const o=actx.createOscillator(); o.type=type; o.frequency.value=f; o.connect(master); o.start(); return o; };
+  const a=mk(41.2,'sawtooth'), b=mk(55,'sine'), c=mk(82.4,'triangle');
+  // slow wobble
+  const lfo=actx.createOscillator(), lg=actx.createGain(); lfo.frequency.value=0.08; lg.gain.value=6;
+  lfo.connect(lg); lg.connect(a.frequency); lfo.start();
+  droneNodes={master,a,b,c,lfo};
+}
+function stopDrone(){ if(droneNodes){ try{droneNodes.master.gain.setValueAtTime(0.05,actx.currentTime); droneNodes.master.gain.exponentialRampToValueAtTime(0.0001,actx.currentTime+0.6);}catch(e){} const nd=droneNodes; droneNodes=null; setTimeout(()=>{try{nd.a.stop();nd.b.stop();nd.c.stop();nd.lfo.stop();}catch(e){}},700);} }
 
 // ---------------------------------------------------------------------------
 //  Input
@@ -778,10 +1091,13 @@ function startGame(){
   $('#hud').classList.remove('hidden');
   setupTouch();
   if(!isTouch) renderer.domElement.requestPointerLock();
+  if(atmoPass){ atmoPass.uniforms.hurt.value=0; atmoPass.uniforms.lowhp.value=0; }
+  startDrone();
   startWave();
 }
 function endGame(won){
   game.over=true; game.won=won; game.started=false; firing=false;
+  stopDrone();
   if(document.pointerLockElement) document.exitPointerLock();
   const ov=$('#overlay'); ov.classList.remove('hidden');
   $('#ovKeys').style.display='none';
@@ -991,19 +1307,29 @@ function updateEnemies(dt){
     e.mesh.position.copy(e.pos);
     // face player
     e.mesh.rotation.y = Math.atan2(player.pos.x-e.pos.x, player.pos.z-e.pos.z);
-    // hurt flash
-    if(e.hurt>0){ e.hurt-=dt; e.mesh.children[0].material.emissiveIntensity = 2.0; }
-    else e.mesh.children[0].material.emissiveIntensity = 0.5;
+    // menacing animation: stalking bob + arm sway, head tracks, lunge when firing
+    e.animT = (e.animT||rand(0,6)) + dt*(dist>2?7:3);
+    const moving = dist>2 ? 1 : 0.2;
+    e.mesh.position.y += Math.sin(e.animT)*0.06*moving;      // gait bob
+    const ud=e.mesh.userData;
+    if(ud.arms){ ud.arms[0].g.rotation.x=Math.sin(e.animT)*0.5*moving - (e.lunge||0)*1.2;
+                 ud.arms[1].g.rotation.x=-Math.sin(e.animT)*0.5*moving - (e.lunge||0)*1.2; }
+    if(ud.head){ ud.head.rotation.x = -0.1 + Math.sin(e.animT*0.5)*0.08; }
+    e.lunge = Math.max(0, (e.lunge||0) - dt*3);
+    // hurt flash / lava-vein glow pulse
+    const skin = ud.skin;
+    if(e.hurt>0){ e.hurt-=dt; skin.emissive.setHex(0xffffff); skin.emissiveIntensity=3.0; if(ud.light)ud.light.intensity=4; }
+    else { skin.emissive.setHex(0xff4a1a); skin.emissiveIntensity=1.2+Math.sin(lavaTime*3+e.animT)*0.4; if(ud.light)ud.light.intensity=1.2; }
     // shoot
     e.fireCd-=dt;
     if(e.fireCd<=0 && dist<70 && player.alive){
-      e.fireCd = e.tier===2?1.4:1.9;
-      const from=e.pos.clone().add(new THREE.Vector3(0,2.2,0));
+      e.fireCd = e.tier===2?1.4:1.9; e.lunge=1;
+      const from=e.pos.clone().add(new THREE.Vector3(0,2.2,0.4));
       const dir=camera.position.clone().sub(from).normalize();
       const m=new THREE.Mesh(eProjGeo,eProjMat); m.position.copy(from);
-      const gl=new THREE.PointLight(0xffb020,1,8,2); m.add(gl); scene.add(m);
+      const gl=new THREE.PointLight(0xffb020,1.4,9,2); m.add(gl); scene.add(m);
       eProjectiles.push({mesh:m,vel:dir.multiplyScalar(34),life:3,dmg:e.tier===2?14:9});
-      sfx('shoot');
+      if(dist<45) sfx('growl');
     }
   }
 }
@@ -1026,7 +1352,16 @@ function animate(){
   for(let i=0;i<pos.length;i+=3){ const x=lavaBase[i],y=lavaBase[i+1];
     pos[i+2]=lavaBase[i+2]+Math.sin(x*0.05+lavaTime)*0.6+Math.cos(y*0.06+lavaTime*0.8)*0.6; }
   lavaGeo.attributes.position.needsUpdate=true;
-  lavaMat.emissiveIntensity = 1.4 + Math.sin(lavaTime*2)*0.25;
+  lavaMat.emissiveIntensity = 1.8 + Math.sin(lavaTime*2)*0.35;
+  lavaTx.map.offset.set(Math.sin(lavaTime*0.05)*0.02, lavaTime*0.008);
+  lavaTx.emissiveMap.offset.copy(lavaTx.map.offset);
+
+  // light flicker (fire + failing neon)
+  for(const f of flickers){
+    f.l.intensity = f.base + Math.sin(lavaTime*f.spd+f.ph)*f.amt*f.base
+                  + (Math.random()-0.5)*f.amt*f.base*0.4;
+  }
+  updateEmbers(dt);
 
   // portal swirl anim
   for(const p of [portalBlue,portalOrange]){ if(p.active){ p.mesh.userData.swirl.rotation.z+=dt*3; p.mesh.children[0].rotation.z+=dt*1.2; } }
@@ -1045,7 +1380,14 @@ function animate(){
 
   if(toastT>0){ toastT-=dt; if(toastT<=0) $('#toast').style.opacity=0; }
 
-  renderer.render(scene,camera);
+  // drive atmosphere / post uniforms
+  atmoPass.uniforms.time.value += dt;
+  const lowFrac = player.alive ? clamp((35-player.hp)/35,0,1) : 0;
+  atmoPass.uniforms.lowhp.value = lerp(atmoPass.uniforms.lowhp.value, lowFrac, 0.1);
+  atmoPass.uniforms.hurt.value = Math.max(0, atmoPass.uniforms.hurt.value - dt*3.5);
+  bloomPass.strength = 0.70 + Math.sin(lavaTime*3)*0.05 + camShake*0.6;
+
+  composer.render();
 }
 animate();
 
