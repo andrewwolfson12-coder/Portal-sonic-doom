@@ -251,13 +251,13 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.35;
+renderer.toneMappingExposure = 1.85;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 $('#game').appendChild(renderer.domElement);
 
 scene = new THREE.Scene();
-scene.background = new THREE.Color(0x07040a);
-scene.fog = new THREE.FogExp2(0x160a14, 0.019);
+scene.background = new THREE.Color(0x1a1424);
+scene.fog = new THREE.FogExp2(0x2a1c2e, 0.009);
 
 camera = new THREE.PerspectiveCamera(80, innerWidth/innerHeight, 0.1, 1200);
 
@@ -267,7 +267,7 @@ camera = new THREE.PerspectiveCamera(80, innerWidth/innerHeight, 0.1, 1200);
 const AtmosphereShader = {
   uniforms: {
     tDiffuse:{value:null}, time:{value:0}, hurt:{value:0}, lowhp:{value:0},
-    vignette:{value:1.05}, grain:{value:0.035}, aberr:{value:0.0011},
+    vignette:{value:0.8}, grain:{value:0.03}, aberr:{value:0.001},
     res:{value:new THREE.Vector2(innerWidth,innerHeight)}
   },
   vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
@@ -288,9 +288,9 @@ const AtmosphereShader = {
       float lum=dot(col,vec3(0.299,0.587,0.114));
       float n=hash(uv*vec2(1920.0,1080.0)+fract(time))-0.5;
       col += n*grain*smoothstep(0.02,0.35,lum);
-      // vignette
-      float vig=smoothstep(0.95,0.28,d*vignette);
-      col*=mix(0.55,1.0,vig);
+      // vignette (gentle — never crush the edges to black)
+      float vig=smoothstep(1.0,0.30,d*vignette);
+      col*=mix(0.74,1.0,vig);
       // damage / low-hp red pulse at the edges
       float edge=smoothstep(0.15,0.5,d);
       col=mix(col, col*vec3(1.6,0.25,0.3), clamp(hurt,0.0,1.0)*edge);
@@ -308,7 +308,7 @@ function buildComposer(){
   composer.setPixelRatio(PIXR);
   composer.setSize(innerWidth, innerHeight);
   composer.addPass(new RenderPass(scene, camera));
-  bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 0.72, 0.55, 0.78);
+  bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 0.62, 0.5, 0.85);
   composer.addPass(bloomPass);
   atmoPass = new ShaderPass(AtmosphereShader); composer.addPass(atmoPass);
   fxaaPass = new ShaderPass(FXAAShader);
@@ -333,9 +333,9 @@ buildComposer();
 // ---------------------------------------------------------------------------
 //  Lighting — dark industrial with hot lava glow + neon accents
 // ---------------------------------------------------------------------------
-scene.add(new THREE.HemisphereLight(0x8a6684, 0x2a161a, 1.05));
-scene.add(new THREE.AmbientLight(0x4a4260, 0.42));
-const key = new THREE.DirectionalLight(0xffd4ba, 1.25);
+scene.add(new THREE.HemisphereLight(0xb59ac0, 0x40282e, 1.7));
+scene.add(new THREE.AmbientLight(0x6a6280, 0.75));
+const key = new THREE.DirectionalLight(0xffe2cc, 1.7);
 key.position.set(-40, 80, 30);
 key.castShadow = true;
 key.shadow.mapSize.set(2048,2048);
@@ -349,15 +349,18 @@ const lava = new THREE.PointLight(0xff5a1e, 3.0, 340, 2);
 lava.position.set(0, -6, 0); lava.castShadow=false; scene.add(lava);
 const lava2 = new THREE.PointLight(0xff3a08, 2.0, 200, 2); lava2.position.set(40,-6,-30); scene.add(lava2);
 // neon rim accents
-const neonA = new THREE.PointLight(0xb14dff, 1.6, 130, 2); neonA.position.set(20,14,-30); scene.add(neonA);
-const neonB = new THREE.PointLight(0x31e6ff, 1.4, 130, 2); neonB.position.set(-30,12,40); scene.add(neonB);
+const neonA = new THREE.PointLight(0xb14dff, 2.2, 150, 2); neonA.position.set(20,14,-30); scene.add(neonA);
+const neonB = new THREE.PointLight(0x31e6ff, 2.0, 150, 2); neonB.position.set(-30,12,40); scene.add(neonB);
+const neonC = new THREE.PointLight(0xff3df0, 1.6, 130, 2); neonC.position.set(6,10,26); scene.add(neonC);
 // soft cool fill from the front so materials & demons read (no hard shadows)
-const fill = new THREE.DirectionalLight(0x9fb4d8, 0.5); fill.position.set(20,30,60); scene.add(fill);
+const fill = new THREE.DirectionalLight(0xb4c6e4, 0.9); fill.position.set(20,30,60); scene.add(fill);
+// gentle back/under fill so the whole arena stays legible
+const fill2 = new THREE.DirectionalLight(0xffb890, 0.5); fill2.position.set(-30,20,-40); scene.add(fill2);
 key.shadow.radius = 4; // softer, more realistic contact
 // flicker driver
 const flickers = [
-  {l:lava, base:3.0, amt:0.6, spd:11, ph:0}, {l:lava2, base:2.0, amt:0.7, spd:7, ph:2},
-  {l:neonA, base:1.6, amt:0.35, spd:23, ph:1}, {l:neonB, base:1.4, amt:0.3, spd:17, ph:4},
+  {l:lava, base:3.4, amt:0.5, spd:11, ph:0}, {l:lava2, base:2.4, amt:0.6, spd:7, ph:2},
+  {l:neonA, base:2.2, amt:0.30, spd:23, ph:1}, {l:neonB, base:2.0, amt:0.25, spd:17, ph:4},
 ];
 
 // ---------------------------------------------------------------------------
@@ -369,9 +372,9 @@ function buildEnvironment(){
   const x=c.getContext('2d');
   // vertical gradient: near-black sky -> deep purple -> hot orange horizon -> dark floor
   const grd=x.createLinearGradient(0,0,0,H);
-  grd.addColorStop(0.00,'#161228'); grd.addColorStop(0.35,'#2c1c40');
-  grd.addColorStop(0.55,'#5a2838'); grd.addColorStop(0.66,'#ff7a2e');
-  grd.addColorStop(0.72,'#ff5218'); grd.addColorStop(0.85,'#3a1810'); grd.addColorStop(1.0,'#140a0c');
+  grd.addColorStop(0.00,'#3a3358'); grd.addColorStop(0.35,'#4a3a66');
+  grd.addColorStop(0.55,'#7a4858'); grd.addColorStop(0.66,'#ff8a3e');
+  grd.addColorStop(0.72,'#ff6228'); grd.addColorStop(0.85,'#5a2c1c'); grd.addColorStop(1.0,'#241418');
   x.fillStyle=grd; x.fillRect(0,0,W,H);
   // molten horizon glow band
   const hg=x.createLinearGradient(0,H*0.6,0,H*0.78); hg.addColorStop(0,'rgba(255,120,40,0)');
@@ -1656,7 +1659,7 @@ function animate(){
   const lowFrac = player.alive ? clamp((35-player.hp)/35,0,1) : 0;
   atmoPass.uniforms.lowhp.value = lerp(atmoPass.uniforms.lowhp.value, lowFrac, 0.1);
   atmoPass.uniforms.hurt.value = Math.max(0, atmoPass.uniforms.hurt.value - dt*3.5);
-  bloomPass.strength = 0.70 + Math.sin(lavaTime*3)*0.05 + camShake*0.6;
+  bloomPass.strength = 0.60 + Math.sin(lavaTime*3)*0.05 + camShake*0.6;
 
   composer.render();
 }

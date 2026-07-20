@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-07-20 — Brightness pass
+- The scene read too dark; raised exposure (1.35→1.85), hemisphere/ambient/key/fill light, and added a second warm fill so the whole arena stays legible.
+- Thinned the fog and lightened the background + fog colour so distance no longer fades to black.
+- Brightened the IBL environment map and boosted the neon point lights (added a third).
+- Softened the vignette so screen edges are never crushed, and raised the bloom threshold so only neon/lava blooms at the higher exposure.
+
 ## 2026-07-20 — Depth pass: viewmodel, props, beveled geometry, AO
 - Added a first-person viewmodel: armored gauntlets + the GRAVITON-TEAR emitter/blade and a glowing left "portal hand", with look-sway, walk-bob and fire recoil.
 - Beveled every structural block (RoundedBoxGeometry) so edges catch light instead of reading as hard CG cubes.
