@@ -218,6 +218,7 @@ import { ShaderPass } from './vendor/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from './vendor/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from './vendor/jsm/postprocessing/OutputPass.js';
 import { FXAAShader } from './vendor/jsm/shaders/FXAAShader.js';
+import { RoundedBoxGeometry } from './vendor/jsm/geometries/RoundedBoxGeometry.js';
 
 // ============================================================================
 //  GRAVITON — a Portal x Sonic x Doom vertical slice, single-file WebGL game.
@@ -583,8 +584,13 @@ const solids = [];   // {min:Vec3, max:Vec3, mesh, portalable}
 const boostPads = []; // {min,max, dir:Vec3, force, mesh}
 let goalZone = null;  // {min,max,mesh}
 
+// beveled box geometry — chamfered edges catch light instead of reading as a hard CG cube
+function bevelGeo(w,h,d){
+  const r = clamp(Math.min(w,h,d)*0.06, 0.04, 0.3);
+  return new RoundedBoxGeometry(w,h,d, 2, r);
+}
 function addBox(x,y,z, w,h,d, mat, opt={}){
-  const geo = new THREE.BoxGeometry(w,h,d);
+  const geo = bevelGeo(w,h,d);
   const m = new THREE.Mesh(geo, mat.map ? tileMat(mat,w,h,d) : mat);
   m.position.set(x,y,z);
   m.castShadow = true; m.receiveShadow = true;
@@ -597,6 +603,17 @@ function addBox(x,y,z, w,h,d, mat, opt={}){
   };
   solids.push(box);
   return box;
+}
+
+// ---- fake ambient occlusion: soft dark contact blobs under vertical objects ----
+const blobTex = (()=>{ const [c,x]=makeCanvas(128);
+  const g=x.createRadialGradient(64,64,0,64,64,64);
+  g.addColorStop(0,'rgba(0,0,0,0.7)'); g.addColorStop(0.55,'rgba(0,0,0,0.35)'); g.addColorStop(1,'rgba(0,0,0,0)');
+  x.fillStyle=g; x.fillRect(0,0,128,128); const t=new THREE.CanvasTexture(c); return t; })();
+function addContactShadow(x,y,z,radius){
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(radius*2,radius*2),
+    new THREE.MeshBasicMaterial({map:blobTex, transparent:true, depthWrite:false, opacity:0.85, blending:THREE.NormalBlending}));
+  m.rotation.x=-Math.PI/2; m.position.set(x,y+0.03,z); m.renderOrder=1; scene.add(m); return m;
 }
 
 // neon edge trim on a platform top
@@ -680,12 +697,100 @@ function buildLevel(){
   addBoostPad(10,5.0,38, 6,4, new THREE.Vector3(-1,0,-0.3), 40);// N -> NW high
 
   // Goal: extraction portal ring on the highest platform
-  addBox(-8,10.0,-52, 0.1,0.1,0.1, MAT.metal); // (platform already built above)
   const gz = new THREE.Mesh(new THREE.TorusGeometry(3.4,0.5,16,40),
       new THREE.MeshStandardMaterial({color:0x0affd0,emissive:0x2effd0,emissiveIntensity:2}));
   gz.position.set(-8,14.0,-52); scene.add(gz);
   goalZone = {mesh:gz, center:new THREE.Vector3(-8,13,-52), r:4.2};
   goalZone.torus = gz;
+
+  addProps();
+}
+
+// ===========================================================================
+//  Environment props / greebles — pipes, barrels, hazard panels, struts,
+//  cables, vents, lamps. Turns empty boxes into a lived-in industrial sector.
+// ===========================================================================
+const pipeMat = new THREE.MeshStandardMaterial({color:0x6a6470, roughness:.5, metalness:.95, envMapIntensity:1.0});
+const rustMat = new THREE.MeshStandardMaterial({color:0x7a5a3a, roughness:.8, metalness:.7,
+   map:metalTx.map, normalMap:metalTx.normalMap, envMapIntensity:.8});
+const hazTex = (()=>{ const [c,x]=makeCanvas(256); x.fillStyle='#141210'; x.fillRect(0,0,256,256);
+  for(let i=-256;i<256;i+=48){ x.fillStyle='#e5b100'; x.beginPath();
+    x.moveTo(i,0); x.lineTo(i+24,0); x.lineTo(i+24+256,256); x.lineTo(i+256,256); x.closePath(); x.fill(); }
+  valueNoise(x,256,40,0.3,'#000000'); const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; return t; })();
+const hazMat = new THREE.MeshStandardMaterial({map:hazTex, roughness:.6, metalness:.4, emissive:0x2a2000, emissiveIntensity:.3});
+
+function addPipe(x1,y1,z1, x2,y2,z2, r=0.22){
+  const a=new THREE.Vector3(x1,y1,z1), b=new THREE.Vector3(x2,y2,z2);
+  const len=a.distanceTo(b);
+  const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,len,12), pipeMat);
+  m.position.copy(a).lerp(b,0.5); m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), b.clone().sub(a).normalize());
+  m.castShadow=true; scene.add(m);
+  // flange rings at the ends
+  for(const p of [a,b]){ const f=new THREE.Mesh(new THREE.CylinderGeometry(r*1.4,r*1.4,0.14,12), pipeMat);
+    f.position.copy(p); f.quaternion.copy(m.quaternion); scene.add(f); }
+  return m;
+}
+function addValve(x,y,z){
+  const g=new THREE.Group();
+  const body=new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.3,0.5,12), pipeMat); g.add(body);
+  const wheel=new THREE.Mesh(new THREE.TorusGeometry(0.34,0.07,8,20), rustMat); wheel.position.y=0.4; wheel.rotation.x=Math.PI/2; g.add(wheel);
+  g.position.set(x,y,z); scene.add(g);
+}
+function addBarrel(x,y,z, toxic=false){
+  const bodyMat = toxic
+    ? new THREE.MeshStandardMaterial({color:0x2a3a12, roughness:.6, metalness:.6, emissive:0x6aff00, emissiveIntensity:.35, envMapIntensity:.8})
+    : rustMat;
+  const g=new THREE.Group();
+  const body=new THREE.Mesh(new THREE.CylinderGeometry(0.62,0.62,1.7,20,1), bodyMat); body.position.y=0.85; body.castShadow=true; g.add(body);
+  for(const yy of [0.35,0.85,1.35]){ const rib=new THREE.Mesh(new THREE.TorusGeometry(0.63,0.06,8,22), pipeMat); rib.position.y=yy; rib.rotation.x=Math.PI/2; g.add(rib); }
+  const lid=new THREE.Mesh(new THREE.CylinderGeometry(0.64,0.64,0.08,20), pipeMat); lid.position.y=1.72; g.add(lid);
+  g.position.set(x,y,z); scene.add(g);
+  addContactShadow(x,y,z,1.0);
+  // collidable cover
+  solids.push({min:new THREE.Vector3(x-0.62,y,z-0.62), max:new THREE.Vector3(x+0.62,y+1.75,z+0.62), mesh:body, portalable:false});
+}
+function addHazardPanel(x,y,z, w,h, ry=0){
+  const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,0.15), hazMat);
+  m.position.set(x,y,z); m.rotation.y=ry; m.castShadow=true; scene.add(m);
+}
+function addStrut(x1,y1,z1,x2,y2,z2){ // diagonal I-beam
+  const a=new THREE.Vector3(x1,y1,z1), b=new THREE.Vector3(x2,y2,z2), len=a.distanceTo(b);
+  const m=new THREE.Mesh(new THREE.BoxGeometry(0.4,len,0.4), MAT.metal2);
+  m.position.copy(a).lerp(b,0.5); m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), b.clone().sub(a).normalize());
+  m.castShadow=true; scene.add(m);
+}
+function addCable(x,z, y0, y1, sag){ // drooping cable via a small tube
+  const pts=[]; for(let i=0;i<=8;i++){ const t=i/8; pts.push(new THREE.Vector3(x+t*0.4, lerp(y0,y1,t)-Math.sin(t*Math.PI)*sag, z)); }
+  const geo=new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 12, 0.05, 6, false);
+  scene.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:0x0a0a0c, roughness:.9, metalness:.2})));
+}
+function addLamp(x,y,z, color=0xfff2d8){
+  const housing=new THREE.Mesh(new THREE.BoxGeometry(2.4,0.4,1.0), MAT.metal2); housing.position.set(x,y,z); scene.add(housing);
+  const panel=new THREE.Mesh(new THREE.PlaneGeometry(2.2,0.8), new THREE.MeshStandardMaterial({color, emissive:color, emissiveIntensity:2.2}));
+  panel.rotation.x=Math.PI/2; panel.position.set(x,y-0.21,z); scene.add(panel);
+  const l=new THREE.PointLight(color, 0.8, 40, 2); l.position.set(x,y-1,z); scene.add(l);
+}
+function addProps(){
+  // spawn-area pipework + valves along the rail wall
+  addPipe(-11,0.4,-13, 11,0.4,-13, 0.26); addPipe(-11,1.1,-13, 11,1.1,-13, 0.18);
+  addValve(-6,0.9,-13); addValve(5,0.9,-13);
+  addHazardPanel(0,1.0,-12.7, 5,1.8);
+  // pillars get climbing pipes + cables
+  addPipe(43.4,0,8, 43.4,10,8,0.2); addPipe(-41.4,2,-14, -41.4,13,-14,0.2); addPipe(11.4,4,46, 11.4,17,46,0.2);
+  addCable(41,7, 12, 9, 1.2); addCable(-38,-12, 12, 10, 1.0); addCable(9,45, 20, 16, 1.4);
+  // barrels as cover on the combat platforms
+  addBarrel(46,3.1,10); addBarrel(48,3.1,6,true); addBarrel(38,3.1,12);
+  addBarrel(-44,4.6,-16,true); addBarrel(-37,4.6,-11);
+  addBarrel(6,6.6,48); addBarrel(14,6.6,44,true);
+  addBarrel(52,9.6,-42); addBarrel(56,9.6,-38,true);
+  // hazard panels beside the boost pads
+  addHazardPanel(4,1.2,10, 3,1.4, Math.PI/2); addHazardPanel(45,2.7,-2, 3,1.4);
+  // support struts under/between raised platforms
+  addStrut(52,0,-40, 56,7, -40); addStrut(-46,0,40, -46,5.5,44); addStrut(10,0,46, 6,4,46);
+  // ceiling lamps overhead (also feed reflections)
+  addLamp(0,22,-10); addLamp(40,24,6); addLamp(-38,24,-12); addLamp(8,26,44); addLamp(-8,26,-50);
+  // wall vents / grates on the big portalable walls
+  for(let i=0;i<3;i++){ addHazardPanel(28.7,6+i*3,-6+(i-1)*5, 2.6,2.0, Math.PI/2); }
 }
 buildLevel();
 
@@ -847,13 +952,94 @@ function fireWeapon(){
   scene.add(core);
   projectiles.push({mesh:core, vel:dir.multiplyScalar(120), life:2.4, dmg:34});
   sfx('shoot');
-  // muzzle kick
+  // muzzle kick + viewmodel recoil + emitter flash
   camShake = Math.min(camShake+0.06, 0.14);
+  vm.recoil = 1; vm.flash = 1;
 }
 
 function updateAmmoHUD(){
   const row=$('#ammoRow'); row.innerHTML='';
   for(let i=0;i<maxAmmo;i++){ const s=document.createElement('span'); if(i<ammo)s.className='on'; row.appendChild(s);}
+}
+
+// ===========================================================================
+//  First-person viewmodel — armored gauntlets + the GRAVITON-TEAR emitter,
+//  parented to the camera, with idle sway, walk bob and fire recoil.
+// ===========================================================================
+scene.add(camera); // so camera children (the viewmodel) render
+const vm = { group:new THREE.Group(), recoil:0, flash:0, bob:0, swayX:0, swayY:0, lastYaw:0, lastPitch:0 };
+(function buildViewmodel(){
+  const carbon = new THREE.MeshStandardMaterial({color:0x141118, roughness:.45, metalness:.75, envMapIntensity:1.0});
+  const plate  = new THREE.MeshStandardMaterial({color:0x201826, roughness:.35, metalness:.85, envMapIntensity:1.0});
+  const neonP  = new THREE.MeshStandardMaterial({color:0x2a1236, emissive:0xb14dff, emissiveIntensity:2.2, roughness:.4, metalness:.5});
+  const neonC  = new THREE.MeshStandardMaterial({color:0x0a2630, emissive:0x31e6ff, emissiveIntensity:2.2, roughness:.4, metalness:.5});
+
+  function gauntlet(side){ // side: +1 right, -1 left
+    const g=new THREE.Group();
+    const fore=new THREE.Mesh(new RoundedBoxGeometry(0.26,0.26,0.95,3,0.09), carbon);
+    fore.position.set(0,0,0.15); g.add(fore);
+    // armor plates
+    for(let i=0;i<3;i++){ const pl=new THREE.Mesh(new RoundedBoxGeometry(0.30,0.10,0.22,2,0.04), plate);
+      pl.position.set(0,0.12,-0.1+i*0.28); g.add(pl); }
+    // glowing knuckle/forearm strips
+    const strip=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.05,0.7), side>0?neonP:neonC);
+    strip.position.set(side*0.12,0.06,0.15); g.add(strip);
+    // hand / fist
+    const hand=new THREE.Mesh(new RoundedBoxGeometry(0.3,0.24,0.3,3,0.08), carbon);
+    hand.position.set(0,-0.02,0.62); g.add(hand);
+    for(let i=0;i<4;i++){ const fng=new THREE.Mesh(new RoundedBoxGeometry(0.055,0.075,0.16,2,0.025), plate);
+      fng.position.set(-0.09+i*0.06,0.02,0.78); g.add(fng); }
+    const knuck=new THREE.Mesh(new THREE.BoxGeometry(0.26,0.03,0.04), side>0?neonP:neonC);
+    knuck.position.set(0,0.09,0.72); g.add(knuck);
+    return g;
+  }
+
+  // RIGHT hand holds the GRAVITON-TEAR emitter + energy blade (angled so the
+  // blade rises into the lower-right of the view, like the concept art)
+  const right=gauntlet(1); right.position.set(0.34,-0.34,-0.62); right.rotation.set(-0.06,-0.20,0.06);
+  const hilt=new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.11,0.42,12), plate);
+  hilt.rotation.x=Math.PI/2; hilt.position.set(0,0.04,0.72); right.add(hilt);
+  const emitter=new THREE.Mesh(new THREE.CylinderGeometry(0.14,0.09,0.16,12), neonP);
+  emitter.rotation.x=Math.PI/2; emitter.position.set(0,0.04,0.98); right.add(emitter);
+  // the energy blade (bloom picks it up)
+  const blade=new THREE.Mesh(new THREE.ConeGeometry(0.11,1.5,4),
+    new THREE.MeshBasicMaterial({color:0xff6ff0, transparent:true, opacity:0.9}));
+  blade.rotation.x=-Math.PI/2; blade.position.set(0,0.04,1.85); right.add(blade); vm.blade=blade;
+  const bladeCore=new THREE.Mesh(new THREE.ConeGeometry(0.045,1.5,4),
+    new THREE.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.95}));
+  bladeCore.rotation.x=-Math.PI/2; bladeCore.position.set(0,0.04,1.85); right.add(bladeCore);
+  const emitLight=new THREE.PointLight(0xd06bff, 1.2, 3.2, 2); emitLight.position.set(0,0.04,1.1); right.add(emitLight); vm.emitLight=emitLight;
+
+  // LEFT hand — open, reaching, glowing palm (portal hand), like the concept art
+  const left=gauntlet(-1); left.position.set(-0.44,-0.42,-0.60); left.rotation.set(0.55,0.42,-0.16);
+  const palm=new THREE.Mesh(new THREE.CircleGeometry(0.1,16), new THREE.MeshBasicMaterial({color:0x8fd0ff, transparent:true, opacity:0.85}));
+  palm.position.set(0,0.04,0.7); left.add(palm); vm.palm=palm;
+  const palmLight=new THREE.PointLight(0x31e6ff, 0.6, 2.2, 2); palmLight.position.set(0,0.04,0.8); left.add(palmLight);
+
+  vm.group.add(right); vm.group.add(left); vm.right=right; vm.left=left;
+  vm.group.visible=false;
+  camera.add(vm.group);
+})();
+
+function updateViewmodel(dt, speed){
+  // look-driven sway (weapon lags the camera)
+  const dYaw=player.yaw-vm.lastYaw, dPitch=player.pitch-vm.lastPitch; vm.lastYaw=player.yaw; vm.lastPitch=player.pitch;
+  vm.swayX=lerp(vm.swayX, clamp(-dYaw*3,-0.12,0.12), 0.15);
+  vm.swayY=lerp(vm.swayY, clamp(-dPitch*3,-0.12,0.12), 0.15);
+  // walk bob
+  if(player.onGround && speed>1){ vm.bob += dt*speed*0.9; }
+  const bobX=Math.cos(vm.bob)*0.012*clamp(speed/8,0,1.5), bobY=Math.abs(Math.sin(vm.bob))*0.02*clamp(speed/8,0,1.5);
+  // recoil decay
+  vm.recoil=Math.max(0,vm.recoil-dt*6); vm.flash=Math.max(0,vm.flash-dt*5);
+  const rk=vm.recoil*vm.recoil;
+  vm.group.position.set(vm.swayX+bobX, vm.swayY+bobY - rk*0.06, rk*0.14);
+  vm.group.rotation.set(vm.swayY*0.6 - rk*0.25, vm.swayX*0.6, 0);
+  // blade / emitter flash
+  const f=0.7+vm.flash*1.4+Math.sin(lavaTime*8)*0.05;
+  if(vm.blade) vm.blade.material.opacity=0.55+vm.flash*0.4;
+  if(vm.emitLight) vm.emitLight.intensity=1.0+vm.flash*3.0;
+  if(vm.palm){ vm.palm.material.opacity=0.6+Math.sin(lavaTime*3)*0.15+ (portalBlue.active||portalOrange.active?0.2:0); }
+  vm.group.scale.setScalar(1); // (hook for future)
 }
 
 // ---------------------------------------------------------------------------
@@ -950,6 +1136,10 @@ function makeDemon(){
   }
 
   const light = new THREE.PointLight(0xff2a12,1.2,11,2); light.position.y=1.9; g.add(light);
+  // grounding contact shadow at the feet
+  const blob=new THREE.Mesh(new THREE.PlaneGeometry(2.4,2.4),
+    new THREE.MeshBasicMaterial({map:blobTex, transparent:true, depthWrite:false, opacity:0.8}));
+  blob.rotation.x=-Math.PI/2; blob.position.y=0.05; g.add(blob);
   g.userData.light=light; g.userData.skin=skin;
   scene.add(g);
   return g;
@@ -1169,11 +1359,13 @@ function startGame(){
   setupTouch();
   if(!isTouch) renderer.domElement.requestPointerLock();
   if(atmoPass){ atmoPass.uniforms.hurt.value=0; atmoPass.uniforms.lowhp.value=0; }
+  vm.group.visible=true;
   startDrone();
   startWave();
 }
 function endGame(won){
   game.over=true; game.won=won; game.started=false; firing=false;
+  vm.group.visible=false;
   stopDrone();
   if(document.pointerLockElement) document.exitPointerLock();
   const ov=$('#overlay'); ov.classList.remove('hidden');
@@ -1304,6 +1496,8 @@ function updatePlayer(dt){
   $('#spNum').textContent = kmh;
   const segs=$('#speedGauge').children; const lit=Math.round(clamp(spd/46,0,1)*GAUGE_SEG);
   for(let i=0;i<GAUGE_SEG;i++){ segs[i].className = i<lit ? (i>GAUGE_SEG-4?'hot':'on') : ''; }
+
+  updateViewmodel(dt, spd);
 }
 
 function handlePortals(dt){

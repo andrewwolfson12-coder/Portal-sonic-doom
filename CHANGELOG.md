@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-07-20 — Depth pass: viewmodel, props, beveled geometry, AO
+- Added a first-person viewmodel: armored gauntlets + the GRAVITON-TEAR emitter/blade and a glowing left "portal hand", with look-sway, walk-bob and fire recoil.
+- Beveled every structural block (RoundedBoxGeometry) so edges catch light instead of reading as hard CG cubes.
+- Dressed the sector with props/greebles: pipes + valves, oil/toxic barrels (collidable cover), hazard-stripe panels, support struts, hanging cables and emissive ceiling lamps that also feed reflections.
+- Added contact-shadow ambient occlusion under demons/barrels/props for grounding (robust fallback after GTAO/SSAO rendered black on the swiftshader/WebGL path).
+- Verified: full three-wave win path intact, zero runtime errors.
+
 ## 2026-07-20 — Realism pass (de-"8-bit")
 - Added image-based lighting: a procedural PMREM environment map so PBR metals reflect the room/lava instead of looking flat.
 - Replaced blocky cell-noise with smooth multi-octave fractal (fbm) noise and raised all textures to 1K, adding fine micro-relief to the normal maps and dedicated roughness maps — kills the pixelated/retro texture look.

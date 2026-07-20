@@ -54,7 +54,10 @@ Mobile/touch is supported too: left virtual stick to move, drag the right side t
 
 The game aims for a moody, cinematic, "realistic-but-hellish" look — entirely from code, no image/model files shipped:
 
+- **First-person viewmodel** — armored gauntlets holding the GRAVITON-TEAR emitter and energy blade (a glowing "portal hand" on the left), with idle sway, walk-bob and fire recoil.
 - **Image-based lighting** — a procedural environment map so the PBR metals actually reflect the surrounding room and lava (the main "flat CGI → real" upgrade), generated with `PMREMGenerator` at load.
+- **Beveled geometry + props** — every structural block is a chamfered `RoundedBoxGeometry` (edges catch light instead of reading as hard cubes), and the sector is dressed with pipes, valves, oil/toxic barrels (usable as cover), hazard-stripe panels, support struts, hanging cables and glowing ceiling lamps.
+- **Contact-shadow ambient occlusion** — soft grounding shadows under demons, barrels and props so nothing floats (a robust stand-in for SSAO, which broke on some WebGL drivers).
 - **Cinematic post-processing** — a full `EffectComposer` chain: ACES tone-mapping, **UnrealBloom** for the neon/lava glow, a custom atmosphere pass (film grain, edge vignette, chromatic aberration, a low-HP red pulse that warps the screen), and FXAA.
 - **Procedural PBR textures** — worn brushed-metal panels with rivets and rust, pitted cracked concrete, and molten magma — built at load from smooth **fractal (fbm) noise** (no blocky pixel-noise) at 1K resolution, each with a **normal + roughness map** derived from a heightfield so surfaces catch light and reflections with real relief.
 - **Scary demons** — built from geometry: hunched charred bodies with glowing lava-vein skin (emissive map), horned skulls, fangs, clawed arms and digitigrade legs, with a stalking gait, head-tracking and a lunge on attack.
