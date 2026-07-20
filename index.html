@@ -251,13 +251,13 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.85;
+renderer.toneMappingExposure = 2.4;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 $('#game').appendChild(renderer.domElement);
 
 scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a1424);
-scene.fog = new THREE.FogExp2(0x2a1c2e, 0.009);
+scene.background = new THREE.Color(0x2c2440);
+scene.fog = new THREE.FogExp2(0x3c2c44, 0.006);
 
 camera = new THREE.PerspectiveCamera(80, innerWidth/innerHeight, 0.1, 1200);
 
@@ -288,9 +288,9 @@ const AtmosphereShader = {
       float lum=dot(col,vec3(0.299,0.587,0.114));
       float n=hash(uv*vec2(1920.0,1080.0)+fract(time))-0.5;
       col += n*grain*smoothstep(0.02,0.35,lum);
-      // vignette (gentle — never crush the edges to black)
-      float vig=smoothstep(1.0,0.30,d*vignette);
-      col*=mix(0.74,1.0,vig);
+      // vignette (very gentle — never crush the edges)
+      float vig=smoothstep(1.05,0.32,d*vignette);
+      col*=mix(0.84,1.0,vig);
       // damage / low-hp red pulse at the edges
       float edge=smoothstep(0.15,0.5,d);
       col=mix(col, col*vec3(1.6,0.25,0.3), clamp(hurt,0.0,1.0)*edge);
@@ -308,7 +308,7 @@ function buildComposer(){
   composer.setPixelRatio(PIXR);
   composer.setSize(innerWidth, innerHeight);
   composer.addPass(new RenderPass(scene, camera));
-  bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 0.62, 0.5, 0.85);
+  bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 0.6, 0.5, 0.92);
   composer.addPass(bloomPass);
   atmoPass = new ShaderPass(AtmosphereShader); composer.addPass(atmoPass);
   fxaaPass = new ShaderPass(FXAAShader);
@@ -333,9 +333,9 @@ buildComposer();
 // ---------------------------------------------------------------------------
 //  Lighting — dark industrial with hot lava glow + neon accents
 // ---------------------------------------------------------------------------
-scene.add(new THREE.HemisphereLight(0xb59ac0, 0x40282e, 1.7));
-scene.add(new THREE.AmbientLight(0x6a6280, 0.75));
-const key = new THREE.DirectionalLight(0xffe2cc, 1.7);
+scene.add(new THREE.HemisphereLight(0xcdb6d6, 0x55383e, 2.3));
+scene.add(new THREE.AmbientLight(0x8a82a0, 1.05));
+const key = new THREE.DirectionalLight(0xfff0e0, 2.2);
 key.position.set(-40, 80, 30);
 key.castShadow = true;
 key.shadow.mapSize.set(2048,2048);
@@ -353,9 +353,9 @@ const neonA = new THREE.PointLight(0xb14dff, 2.2, 150, 2); neonA.position.set(20
 const neonB = new THREE.PointLight(0x31e6ff, 2.0, 150, 2); neonB.position.set(-30,12,40); scene.add(neonB);
 const neonC = new THREE.PointLight(0xff3df0, 1.6, 130, 2); neonC.position.set(6,10,26); scene.add(neonC);
 // soft cool fill from the front so materials & demons read (no hard shadows)
-const fill = new THREE.DirectionalLight(0xb4c6e4, 0.9); fill.position.set(20,30,60); scene.add(fill);
+const fill = new THREE.DirectionalLight(0xc6d4ee, 1.3); fill.position.set(20,30,60); scene.add(fill);
 // gentle back/under fill so the whole arena stays legible
-const fill2 = new THREE.DirectionalLight(0xffb890, 0.5); fill2.position.set(-30,20,-40); scene.add(fill2);
+const fill2 = new THREE.DirectionalLight(0xffc4a0, 0.85); fill2.position.set(-30,20,-40); scene.add(fill2);
 key.shadow.radius = 4; // softer, more realistic contact
 // flicker driver
 const flickers = [
@@ -372,9 +372,9 @@ function buildEnvironment(){
   const x=c.getContext('2d');
   // vertical gradient: near-black sky -> deep purple -> hot orange horizon -> dark floor
   const grd=x.createLinearGradient(0,0,0,H);
-  grd.addColorStop(0.00,'#3a3358'); grd.addColorStop(0.35,'#4a3a66');
-  grd.addColorStop(0.55,'#7a4858'); grd.addColorStop(0.66,'#ff8a3e');
-  grd.addColorStop(0.72,'#ff6228'); grd.addColorStop(0.85,'#5a2c1c'); grd.addColorStop(1.0,'#241418');
+  grd.addColorStop(0.00,'#565074'); grd.addColorStop(0.35,'#645488');
+  grd.addColorStop(0.55,'#9a6072'); grd.addColorStop(0.66,'#ff9a52');
+  grd.addColorStop(0.72,'#ff7438'); grd.addColorStop(0.85,'#6e3a26'); grd.addColorStop(1.0,'#342026');
   x.fillStyle=grd; x.fillRect(0,0,W,H);
   // molten horizon glow band
   const hg=x.createLinearGradient(0,H*0.6,0,H*0.78); hg.addColorStop(0,'rgba(255,120,40,0)');
